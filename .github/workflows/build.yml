@@ -1,0 +1,78 @@
+name: build
+
+on:
+  release:
+    types: [published]     #publish a release build + attach signed apk
+  workflow_dispatch:        #manual test builds (actions > run workflow)
+  push:
+    branches: [ main ]      #build check on pushes to main
+
+permissions:
+  contents: write           #allows attaching the apk to release
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools build-tools;34.0.0 platforms;android-34'
+
+      - name: Set up gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Decode keystore (required)
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::error::KEYSTORE_B64 secret is not set. Refusing to build an unsigned (uninstallable) apk."
+            echo "Add KEYSTORE_B64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD in Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          echo "KEYSTORE_FILE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+          echo "Keystore configured; release will be signed."
+
+      - name: Build release apk
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          VNAME="${{ github.event.release.tag_name }}"
+          if [ -z "$VNAME" ]; then VNAME="0.0.${{ github.run_number }}"; fi
+          gradle :app:assembleRelease --no-daemon --stacktrace \
+            -PvCode=${{ github.run_number }} -PvName="$VNAME"
+
+      - name: Collect apk
+        run: |
+          mkdir -p out
+          TAG_NAME="${{ github.event.release.tag_name }}"
+          if [ -z "$TAG_NAME" ]; then TAG_NAME="ci-${{ github.run_number }}"; fi
+          cp app/build/outputs/apk/release/*.apk "out/Oslokrok-${TAG_NAME}.apk"
+          ls -l out
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Oslokrok-apk
+          path: out/*.apk
+
+      - name: Attach apk to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: out/*.apk
