@@ -35,7 +35,7 @@ import org.luckypray.dexkit.result.MethodDataList;
  *
  * The method is resolved dynamically at load via DexKit (structural
  * anchors, not hardcoded names) so it should survive app updates. If
- * DexKit is fails to load, falls back to hardcoded method.
+ * DexKit fails to load, falls back to hardcoded method.
  */
 public class Hook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
 
