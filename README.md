@@ -5,9 +5,9 @@
 
 **A Vector (formerly Xposed/LSPosed) module that prevents the PayPal app from crashing on rooted devices.**
 
-This crash is caused by PayPal's own on-device anti-tamper (RASP), which throws
-`RootDetectionSecurityException` (`s=root`) a few seconds after launch. Oslokrok
-neutralises it at the single point where the detection signal is emitted.
+This crash is caused by PayPal's own on-device anti-tamper (RASP), which
+kills the app a few seconds after launch on rooted devices. Oslokrok neutralises
+the mechanism that causes this crash, allowing the PayPal app to run normally.
 
 ---
 
@@ -21,29 +21,27 @@ PayPal Hook = `Oslokrok.`<br/>
 
 ## ✨ Features
 
-- ✅ Prevents on-launch `s=root` crash.
-- ✅ Self-healing: the target method is resolved at runtime with DexKit, not hardcoded names.
-- ✅ Falls back to a fixed hook if DexKit is unavailable.
+- ✅ Prevents on-launch anti-tamper crash (`AppVerifier` for 10.19.0+, `s=root` for pre-10.19.0).
+- ✅ Self-healing: targets are resolved at runtime with DexKit, not hardcoded names.
+- ✅ Falls back to fixed hooks if DexKit is unavailable.
 
 ---
 
 ## 🛠️ How It Works
 
-PayPal's RASP wires several detection channels, but **only the `"root"` channel
-is set to crash the app**. They all funnel through one emit method. No-opping it means
-the crash is never scheduled.
+- **AppVerifier (10.19.0+)** - this is a startup integrity check that crashes the process on a mismatch. No-opping its `run()` method prevents the crash.
+- **Legacy (pre-10.19.0)**   - RASP has several detection channels, but only the root channel is set up to cause the crash. No-opping this channel means the crash never happens.
 
-### 🔍 Target
+### 🔍 Target(s)
 
-| What | Value |
-| --- | --- |
-| Method | `RaspDetectionDataSourceImpl.signal()` |
-| Package | `com.paypal.oslo.core.security.rasp` |
-| Interface | `SignalRaspDetectionDataSource` |
+| Check | Method | Package |
+| --- | --- | --- |
+| AppVerifier (10.19.0+) | `AppVerifier.run()` | `com.paypal.oslo.core.startup` |
+| Legacy (pre-10.19.0) | `RaspDetectionDataSourceImpl.signal()` | `com.paypal.oslo.core.security.rasp` |
 
-Oslokrok locates this method with [DexKit](https://github.com/LuckyPray/DexKit)
-using structural anchors (interface + a 0-arg `signal()` in the `rasp` package)
-so it should survive obfuscation/name changes, across future updates.
+Oslokrok locates both methods with [DexKit](https://github.com/LuckyPray/DexKit)
+using structural anchors (package names + method shape) with a fixed-name fallback 
+so hooks should survive updates, unless these are removed.
 
 ---
 
@@ -67,16 +65,16 @@ so it should survive obfuscation/name changes, across future updates.
 > **More details → Install anyway**.
 
 Check LSPosed/Vector log (filter `oslokrok`) for:
-`hooked (dynamic) …signal()` and `signal hooks=1 (dexkit)`.
+`signal hooks=1, verifier hooks=1 (dexkit)`.
 
 ---
 
 ## 🧠 Notes
 
-- If an update changes the package/interface/method so that nothing
-  hooks (`signal hooks=0`), the anchors in `app/src/main/java/net/oslokrok/hook/Hook.java` 
-  need updating.
-- "Self-Healing" function hasn't been thoroughly tested as this module has currently only been tested on v10.14.0, v10.16.0, v10.17.0 & V10.18.0.
+- If an update changes the package/interface/method so that nothing hooks
+  (`signal hooks=0, verifier hooks=0`), the anchors in
+  `app/src/main/java/net/oslokrok/hook/Hook.java` need updating.
+- Tested on v10.14.0, v10.16.0, v10.17.0, v10.18.0 and v10.19.0.
 
 ---
 
@@ -85,7 +83,7 @@ Check LSPosed/Vector log (filter `oslokrok`) for:
 - **[Santand3rp](https://github.com/mwilky/Santand3rp)** by **mwilky** — for inspiring the
   initial concept for this project and the two-hook approach to defeating the in-process anti-tamper.
 - **[DexKit](https://github.com/LuckyPray/DexKit)** by **LuckyPray** — the
-  runtime dex-search engine that makes the hook "self-healing".
+  runtime dex-search engine that makes the hooks "self-healing".
 
 ---
 
