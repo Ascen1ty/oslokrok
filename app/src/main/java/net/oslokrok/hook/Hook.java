@@ -30,13 +30,17 @@ import org.luckypray.dexkit.result.MethodData;
 import org.luckypray.dexkit.result.MethodDataList;
 
 /**
- * Stops app's on-launch root-detection (RASP) crash by no-opping
- * single upstream emit point of the detection signal flow.
+ * Each machanism is resolved dynamically via DexKit (structural
+ * anchors in package tree) with a hardcoded fallbacks:
  *
- * The method is resolved dynamically at load via DexKit (structural
- * anchors, not hardcoded names) so it should survive app updates. If
- * DexKit fails to load, falls back to hardcoded method.
+ *   1. signal()  - original RASP detection-signal emit point (RaspDetectionDataSourceImpl.signal).
+ *                  Reduntant on 10.19.0+ (as is removed), but is kept here for older builds.
+ *
+ *   2. AppVerifier.run() - the 10.19.0 startup verifier (oslo.core.startup). DexGuard VM launched 
+ *                   by AppVerifierInitializer crashes (NPE / heap exhaustion) on tamper mismatch.
+ *                  Nothing consumes its result, so replacing run() with no-op resolves the crash.
  */
+
 public class Hook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
 
     private static final String TARGET = "com.paypal.android.p2pmobile";
@@ -44,6 +48,11 @@ public class Hook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
     private static final String IMPL   = "com.paypal.oslo.core.security.rasp.RaspDetectionDataSourceImpl";
     private static final String PKG    = "com.paypal.oslo.core.security.rasp";
     private static final String SIGNAL = "signal";
+
+    private static final String STARTUP_PKG = "com.paypal.oslo.core.startup";
+    private static final String APPVERIFIER = "com.paypal.oslo.core.startup.AppVerifier";
+    private static final String RUN         = "run";
+
     private static final String ABI    = "arm64-v8a";
     private static final String TAG    = "[oslokrok] ";
 
@@ -62,13 +71,14 @@ public class Hook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
 
         boolean nativeOk = loadDexKitNative(lpparam);
 
-        Set<Member> targets = new HashSet<>();
+        Set<Member> signalTargets = new HashSet<>();
+        Set<Member> verifierTargets = new HashSet<>();
+
         if (nativeOk) {
             DexKitBridge bridge = null;
             try {
                 bridge = DexKitBridge.create(cl, true);
 
-                // (A) any 0-arg signal() declared in the rasp.* package
                 try {
                     MethodDataList ms = bridge.findMethod(FindMethod.create().matcher(
                             MethodMatcher.create()
@@ -76,19 +86,29 @@ public class Hook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
                                     .name(SIGNAL)
                                     .paramCount(0)));
                     for (MethodData md : ms) {
-                        try { targets.add(md.getMethodInstance(cl)); } catch (Throwable ignored) {}
+                        try { signalTargets.add(md.getMethodInstance(cl)); } catch (Throwable ignored) {}
                     }
                 } catch (Throwable t) { XposedBridge.log(TAG + "query A failed: " + t); }
 
-                // (B) classes implementing the stable interface -> their signal()
                 try {
                     ClassDataList impls = bridge.findClass(FindClass.create().matcher(
                             ClassMatcher.create().addInterface(IFACE)));
                     for (ClassData cd : impls) {
-                        try { targets.add(cd.getInstance(cl).getDeclaredMethod(SIGNAL)); }
+                        try { signalTargets.add(cd.getInstance(cl).getDeclaredMethod(SIGNAL)); }
                         catch (Throwable ignored) {}
                     }
                 } catch (Throwable t) { XposedBridge.log(TAG + "query B failed: " + t); }
+
+                try {
+                    MethodDataList ms = bridge.findMethod(FindMethod.create().matcher(
+                            MethodMatcher.create()
+                                    .declaredClass(STARTUP_PKG, StringMatchType.Contains)
+                                    .name(RUN)
+                                    .paramCount(0)));
+                    for (MethodData md : ms) {
+                        try { verifierTargets.add(md.getMethodInstance(cl)); } catch (Throwable ignored) {}
+                    }
+                } catch (Throwable t) { XposedBridge.log(TAG + "query C failed: " + t); }
 
             } catch (Throwable t) {
                 XposedBridge.log(TAG + "DexKit init failed: " + t);
@@ -97,36 +117,60 @@ public class Hook implements IXposedHookLoadPackage, IXposedHookZygoteInit {
             }
         }
 
-        int hooks = 0;
-        for (Member m : targets) {
-            if ((m.getModifiers() & Modifier.ABSTRACT) != 0) continue; // skip interface decl
+        // signal()
+        int signalHooks = 0;
+        for (Member m : signalTargets) {
+            if ((m.getModifiers() & Modifier.ABSTRACT) != 0) continue;
             try {
                 XposedBridge.hookMethod(m, XC_MethodReplacement.returnConstant(null));
-                hooks++;
+                signalHooks++;
                 XposedBridge.log(TAG + "hooked (dynamic) " + m);
             } catch (Throwable t) { XposedBridge.log(TAG + "hook failed on " + m + ": " + t); }
         }
-
-        if (hooks == 0) {
+        if (signalHooks == 0) {
             try {
                 XposedHelpers.findAndHookMethod(IMPL, cl, SIGNAL,
                         XC_MethodReplacement.returnConstant(null));
-                hooks++;
+                signalHooks++;
                 XposedBridge.log(TAG + "hooked (fallback) " + IMPL + "." + SIGNAL + "()");
             } catch (Throwable t) {
-                XposedBridge.log(TAG + "fallback hook failed: " + t);
+                XposedBridge.log(TAG + "signal fallback failed: " + t);
             }
         }
 
-        XposedBridge.log(TAG + "active on " + TARGET + ", signal hooks=" + hooks
+        // appverif
+        int verifierHooks = 0;
+        for (Member m : verifierTargets) {
+            if ((m.getModifiers() & Modifier.ABSTRACT) != 0) continue;
+            try {
+                XposedBridge.hookMethod(m, XC_MethodReplacement.returnConstant(null));
+                verifierHooks++;
+                XposedBridge.log(TAG + "neutralised (dynamic) " + m);
+            } catch (Throwable t) { XposedBridge.log(TAG + "verifier hook failed on " + m + ": " + t); }
+        }
+        if (verifierHooks == 0) {
+            try {
+                XposedHelpers.findAndHookMethod(APPVERIFIER, cl, RUN,
+                        XC_MethodReplacement.returnConstant(null));
+                verifierHooks++;
+                XposedBridge.log(TAG + "neutralised (fallback) " + APPVERIFIER + "." + RUN + "()");
+            } catch (Throwable t) {
+                // pre-10.19.0
+                XposedBridge.log(TAG + "no AppVerifier on this version: " + t);
+            }
+        }
+
+        XposedBridge.log(TAG + "active on " + TARGET
+                + ", signal hooks=" + signalHooks
+                + ", verifier hooks=" + verifierHooks
                 + (nativeOk ? " (dexkit)" : " (no-dexkit)"));
     }
 
-    /** Load libdexkit.so: try the classloader path, else extract from APK and load by path. */
+    /** Load libdexkit.so */
     private boolean loadDexKitNative(XC_LoadPackage.LoadPackageParam lpparam) {
         if (nativeLoaded) return true;
         try { System.loadLibrary("dexkit"); nativeLoaded = true; return true; }
-        catch (Throwable ignored) { /* not on the module classloader's lib path under Vector */ }
+        catch (Throwable ignored) {}
 
         try {
             if (modulePath == null) { XposedBridge.log(TAG + "modulePath unknown; cannot extract .so"); return false; }
