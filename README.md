@@ -74,7 +74,7 @@ Check LSPosed/Vector log (filter `oslokrok`) for:
 - If an update changes the package/interface/method so that nothing hooks
   (`signal hooks=0, verifier hooks=0`), the anchors in
   `app/src/main/java/net/oslokrok/hook/Hook.java` need updating.
-- Tested on v10.14.0, v10.16.0, v10.17.0, v10.18.0 and v10.19.0.
+- Tested on v10.14.0, v10.16.0, v10.17.0, v10.18.0 and v10.19.0, v10.20.0, v10.21.0.
 
 ---
 
